@@ -1,0 +1,100 @@
+import { Tool } from 'langchain/agents';
+import Ajv from 'ajv';
+
+// The following is the actual code that will be
+// run by the tool when it is called
+import ytdl from "ytdl-core";
+import fs from "fs";
+
+async function call({ url, outputFile }) {
+  const video = ytdl(url, { filter: "audioandvideo" });
+  const writeStream = fs.createWriteStream(outputFile);
+
+  video.pipe(writeStream);
+
+  return new Promise((resolve, reject) => {
+    video.on("progress", (chunkLength, downloaded, total) => {
+      console.log(`Downloading: ${((downloaded / total) * 100).toFixed(2)}%`);
+    });
+
+    video.on("end", () => {
+      console.log("Download complete.");
+      resolve({ filePath: outputFile });
+    });
+
+    video.on("error", (error) => {
+      console.error("Error downloading video:", error);
+      reject(error);
+    });
+  });
+}
+
+// This is a class that corresponds to the Langchain tool definition
+// https://js.langchain.com/docs/modules/agents/tools/
+// It validates the input & output against the schemas
+// and then it calls the tool code
+class DownloadYouTubeVideo extends Tool {
+  name = 'download-you-tube-video';
+  
+  description = `Download a YouTube video from a URL to a given file on your filesystem (relative to the current path), logging progress, and return the file's path. Add subtitles of the video. The action input should adhere to this JSON schema:
+{{"type":"object","properties":{{"url":{{"type":"string","format":"uri"}},"outputFile":{{"type":"string"}}}},"required":["url","outputFile"]}}`;
+  
+  ajv = new Ajv();
+
+  inputSchema = {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri"
+      },
+      "outputFile": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "url",
+      "outputFile"
+    ]
+  };
+  
+  outputSchema = {
+    "type": "object",
+    "properties": {
+      "filePath": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "filePath"
+    ]
+  };
+
+  validate(data, schema) {
+    if (schema) {
+      const validateSchema = this.ajv.compile(schema);
+      if (!validateSchema(data)) {
+        throw new Error(this.ajv.errorsText(validateSchema.errors));
+      }
+    }
+  }
+
+  async _call(arg) {
+    let output;
+    try {
+      const input = JSON.parse(arg);
+      this.validate(input, this.inputSchema);
+      output = await call(input);
+      try {
+        this.validate(output, this.outputSchema);
+      } catch (err) {
+        throw new Error(`${err.message}: ${JSON.stringify(output)}`);
+      }
+    } catch (err) {
+      output = { error: err.message || err };
+    }
+    return JSON.stringify(output);
+  }
+}
+
+export default DownloadYouTubeVideo;
